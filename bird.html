@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sky Bird — Dodge the Obstacles</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(180deg, #1a1a2e 0%, #16213e 40%, #0f3460 100%);
+      font-family: "Segoe UI", system-ui, sans-serif;
+      color: #e8e8e8;
+      user-select: none;
+      touch-action: manipulation;
+    }
+    h1 {
+      font-size: 1.25rem;
+      font-weight: 600;
+      margin-bottom: 0.5rem;
+      letter-spacing: 0.02em;
+    }
+    .hint {
+      font-size: 0.8rem;
+      opacity: 0.75;
+      margin-bottom: 0.75rem;
+    }
+    #wrap {
+      position: relative;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+    }
+    canvas {
+      display: block;
+      background: #87ceeb;
+      cursor: pointer;
+    }
+    #overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: rgba(10, 15, 30, 0.72);
+      color: #fff;
+      text-align: center;
+      padding: 1.5rem;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.2s ease;
+    }
+    #overlay.visible {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    #overlay h2 {
+      font-size: 1.75rem;
+      margin-bottom: 0.5rem;
+    }
+    #overlay p {
+      font-size: 0.95rem;
+      opacity: 0.9;
+      max-width: 280px;
+      line-height: 1.45;
+      white-space: pre-line;
+    }
+    #scoreHud {
+      position: absolute;
+      top: 12px;
+      left: 0;
+      right: 0;
+      text-align: center;
+      font-size: 1.5rem;
+      font-weight: 700;
+      text-shadow: 0 2px 4px rgba(0, 0, 0, 0.35);
+      color: #fff;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <h1>Sky Bird</h1>
+  <p class="hint">One bird (that’s normal). Press Space or click to fly — green pillars move in from the right.</p>
+  <div id="wrap">
+    <canvas id="game" width="400" height="560"></canvas>
+    <div id="scoreHud">0</div>
+    <div id="overlay" class="visible">
+      <h2 id="overlayTitle">Ready?</h2>
+      <p id="overlayText">Tap or press Space to start flying.</p>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const canvas = document.getElementById("game");
+      const ctx = canvas.getContext("2d");
+      const scoreHud = document.getElementById("scoreHud");
+      const overlay = document.getElementById("overlay");
+      const overlayTitle = document.getElementById("overlayTitle");
+      const overlayText = document.getElementById("overlayText");
+
+      const W = canvas.width;
+      const H = canvas.height;
+
+      const GRAVITY = 0.42;
+      const FLAP = -8.2;
+      const PIPE_W = 52;
+      const PIPE_GAP = 148;
+      const PIPE_SPEED = 3.2;
+      const PIPE_SPAWN_MS = 1850;
+
+      let bird = { x: 90, y: H / 2, vy: 0, r: 18 };
+      let pipes = [];
+      let score = 0;
+      let best = Number(localStorage.getItem("skyBirdBest") || 0);
+      let lastPipeTime = 0;
+      let running = false;
+      let died = false;
+      let clouds = [];
+
+      function initClouds() {
+        clouds = [];
+        for (let i = 0; i < 6; i++) {
+          clouds.push({
+            x: Math.random() * W,
+            y: 40 + Math.random() * (H * 0.35),
+            s: 0.5 + Math.random() * 0.6,
+            spd: 0.3 + Math.random() * 0.4,
+          });
+        }
+      }
+
+      function randomPipeTop() {
+        const minTop = 80;
+        const maxTop = H - PIPE_GAP - minTop;
+        return minTop + Math.random() * (maxTop - minTop);
+      }
+
+      function spawnPipe(now) {
+        pipes.push({
+          x: W + PIPE_W,
+          top: randomPipeTop(),
+          passed: false,
+        });
+        lastPipeTime = now;
+      }
+
+      /** First pillar partly on-screen; gap lines up with bird start so you don’t die instantly. */
+      function spawnFirstPipe() {
+        const idealTop = H / 2 - PIPE_GAP / 2;
+        const topH = Math.max(80, Math.min(H - PIPE_GAP - 80, idealTop));
+        pipes.push({
+          x: W - 70,
+          top: topH,
+          passed: false,
+        });
+      }
+
+      function resetGame() {
+        bird = { x: 90, y: H / 2, vy: 0, r: 18 };
+        pipes = [];
+        score = 0;
+        lastPipeTime = 0;
+        died = false;
+        scoreHud.textContent = "0";
+        initClouds();
+      }
+
+      function showOverlay(title, text) {
+        overlayTitle.textContent = title;
+        overlayText.textContent = text;
+        overlay.classList.add("visible");
+      }
+
+      function hideOverlay() {
+        overlay.classList.remove("visible");
+      }
+
+      function startGame() {
+        resetGame();
+        running = true;
+        hideOverlay();
+        const t = performance.now();
+        lastPipeTime = t;
+        spawnFirstPipe();
+        requestAnimationFrame(loop);
+      }
+
+      function flap() {
+        if (!running) {
+          if (died) startGame();
+          else startGame();
+          return;
+        }
+        bird.vy = FLAP;
+      }
+
+      function rectCircleCollide(rx, ry, rw, rh, cx, cy, cr) {
+        const nx = Math.max(rx, Math.min(cx, rx + rw));
+        const ny = Math.max(ry, Math.min(cy, ry + rh));
+        const dx = cx - nx;
+        const dy = cy - ny;
+        return dx * dx + dy * dy < cr * cr;
+      }
+
+      function hitTest() {
+        const { x, y, r } = bird;
+        if (y - r < 0 || y + r > H) return true;
+        for (const p of pipes) {
+          const topH = p.top;
+          const botY = p.top + PIPE_GAP;
+          if (
+            rectCircleCollide(p.x, 0, PIPE_W, topH, x, y, r) ||
+            rectCircleCollide(p.x, botY, PIPE_W, H - botY, x, y, r)
+          )
+            return true;
+        }
+        return false;
+      }
+
+      function drawBackground() {
+        const g = ctx.createLinearGradient(0, 0, 0, H);
+        g.addColorStop(0, "#6ecff6");
+        g.addColorStop(0.55, "#87ceeb");
+        g.addColorStop(1, "#b8dfe8");
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, W, H);
+
+        ctx.fillStyle = "rgba(255,255,255,0.55)";
+        for (const c of clouds) {
+          ctx.save();
+          ctx.translate(c.x, c.y);
+          ctx.scale(c.s, c.s);
+          ctx.beginPath();
+          ctx.arc(0, 0, 30, 0, Math.PI * 2);
+          ctx.arc(25, -5, 22, 0, Math.PI * 2);
+          ctx.arc(-20, 2, 18, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+          c.x -= c.spd;
+          if (c.x < -80) c.x = W + 40;
+        }
+
+        ctx.fillStyle = "rgba(34, 139, 34, 0.35)";
+        ctx.fillRect(0, H - 36, W, 36);
+        ctx.fillStyle = "rgba(46, 125, 50, 0.5)";
+        ctx.fillRect(0, H - 22, W, 22);
+      }
+
+      function drawPipe(p) {
+        const cap = 10;
+        ctx.fillStyle = "#2e7d32";
+        ctx.fillRect(p.x, 0, PIPE_W, p.top);
+        ctx.fillRect(p.x, p.top + PIPE_GAP, PIPE_W, H - (p.top + PIPE_GAP));
+        ctx.fillStyle = "#43a047";
+        ctx.fillRect(p.x - 2, p.top - cap, PIPE_W + 4, cap);
+        ctx.fillRect(p.x - 2, p.top + PIPE_GAP, PIPE_W + 4, cap);
+        ctx.strokeStyle = "#1b5e20";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(p.x, 0, PIPE_W, p.top);
+        ctx.strokeRect(p.x, p.top + PIPE_GAP, PIPE_W, H - (p.top + PIPE_GAP));
+      }
+
+      function drawBird() {
+        const { x, y, r } = bird;
+        const tilt = Math.max(-0.6, Math.min(0.9, bird.vy * 0.08));
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate(tilt);
+        ctx.fillStyle = "#ffca28";
+        ctx.beginPath();
+        ctx.ellipse(0, 0, r * 1.05, r * 0.9, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "#ffb300";
+        ctx.beginPath();
+        ctx.arc(6, -2, r * 0.35, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "#fff";
+        ctx.beginPath();
+        ctx.arc(8, -6, r * 0.28, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "#333";
+        ctx.beginPath();
+        ctx.arc(10, -6, r * 0.12, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "#ff7043";
+        ctx.beginPath();
+        ctx.moveTo(r * 0.5, 2);
+        ctx.lineTo(r * 1.15, 6);
+        ctx.lineTo(r * 0.5, 8);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+
+      function loop(now) {
+        if (!running) return;
+
+        drawBackground();
+
+        if (now - lastPipeTime > PIPE_SPAWN_MS) spawnPipe(now);
+
+        for (const p of pipes) {
+          p.x -= PIPE_SPEED;
+          drawPipe(p);
+          if (!p.passed && p.x + PIPE_W < bird.x) {
+            p.passed = true;
+            score++;
+            scoreHud.textContent = String(score);
+          }
+        }
+        pipes = pipes.filter((p) => p.x > -PIPE_W - 10);
+
+        bird.vy += GRAVITY;
+        bird.y += bird.vy;
+
+        drawBird();
+
+        if (hitTest()) {
+          running = false;
+          died = true;
+          if (score > best) {
+            best = score;
+            localStorage.setItem("skyBirdBest", String(best));
+          }
+          showOverlay(
+            "Crashed!",
+            `Score: ${score}  ·  Best: ${best}\nTap or Space to try again.`
+          );
+          return;
+        }
+
+        requestAnimationFrame(loop);
+      }
+
+      function onFlapInput(e) {
+        e.preventDefault();
+        flap();
+      }
+
+      /* Clicks on the dark start / game-over screen hit the overlay, not the canvas — start must work there too. */
+      canvas.addEventListener("pointerdown", onFlapInput);
+      overlay.addEventListener("pointerdown", onFlapInput);
+      overlay.addEventListener("click", onFlapInput);
+
+      window.addEventListener("keydown", (e) => {
+        if (e.code === "Space" || e.key === " " || e.key === "Enter") {
+          e.preventDefault();
+          flap();
+        }
+      });
+
+      initClouds();
+
+      function paintMenuFrame() {
+        drawBackground();
+        drawBird();
+      }
+
+      paintMenuFrame();
+      showOverlay("Sky Bird", "Tap or press Space to start flying.");
+    })();
+  </script>
+</body>
+</html>
